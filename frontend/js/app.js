@@ -329,20 +329,20 @@ const App = {
       }
 
       try {
-        if (!navigator.mediaDevices?.getUserMedia) {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           throw new Error('BROWSER_CAMERA_API_UNSUPPORTED');
         }
 
         const config = {
           fps: 10,
-          qrbox: (viewfinderWidth, viewfinderHeight) => {
-            const size = Math.min(viewfinderWidth, viewfinderHeight) * 0.6;
-            return { width: size, height: size };
-          },
           aspectRatio: 1,
+          formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+          videoConstraints: {
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
         };
 
-        // 直接尝试启动，不预先请求权限/枚举设备，避免多次开关摄像头
         const cameraOptions = [
           { facingMode: { exact: 'environment' } },
           { facingMode: 'environment' },
