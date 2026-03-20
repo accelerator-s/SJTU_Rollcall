@@ -242,10 +242,12 @@ const App = {
 
     const applyVisualZoom = (level) => {
       const reader = document.getElementById('qr-reader');
-      const video = reader?.querySelector('video');
-      if (!video) return;
-      video.style.transform = level > 1 ? `scale(${level})` : '';
-      video.style.transformOrigin = 'center center';
+      if (!reader) return;
+      // 缩放整个 #qr-reader 容器而非 video 本身
+      // 这样 video 元素不受 CSS transform 影响，html5-qrcode 帧捕获和解码正常
+      // 视觉放大由外层 .scanner-wrapper overflow:hidden 裁切实现
+      reader.style.transform = level > 1 ? `scale(${level})` : '';
+      reader.style.transformOrigin = 'center center';
     };
 
     const onManualZoomChange = (value) => {
@@ -299,10 +301,9 @@ const App = {
     const resetZoom = () => {
       zoomValue.value = 1;
       const reader = document.getElementById('qr-reader');
-      const video = reader?.querySelector('video');
-      if (video) {
-        video.style.transform = '';
-        video.style.transformOrigin = '';
+      if (reader) {
+        reader.style.transform = '';
+        reader.style.transformOrigin = '';
       }
     };
 

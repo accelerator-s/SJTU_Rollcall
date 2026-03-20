@@ -13,6 +13,7 @@
 .scanner-wrapper #qr-reader {
   width: 100% !important;
   border: none !important;
+  transition: transform 0.15s ease;
 }
 
 .scanner-wrapper #qr-reader video {
@@ -20,7 +21,6 @@
   height: 100% !important;
   object-fit: cover;
   border-radius: var(--radius-md);
-  transition: transform 0.15s ease;
 }
 
 .scanner-blackout {
