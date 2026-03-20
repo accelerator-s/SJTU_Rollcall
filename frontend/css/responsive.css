@@ -1,0 +1,129 @@
+/* 手机端 (<=768px) */
+@media (max-width: 768px) {
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  #app {
+    height: 100%;
+  }
+
+  .az-header {
+    height: 56px;
+    padding: max(0px, env(safe-area-inset-top)) 12px 0;
+  }
+
+  .az-header__brand {
+    font-size: 17px;
+    letter-spacing: 0;
+  }
+
+  .az-header__status {
+    max-width: 50vw;
+    font-size: 11px;
+    padding: 3px 7px;
+    gap: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .az-main {
+    height: calc(100dvh - 56px - env(safe-area-inset-top));
+    padding-bottom: env(safe-area-inset-bottom);
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .az-page {
+    padding: 12px;
+    max-width: 100%;
+  }
+
+  .az-page-title {
+    font-size: var(--font-size-xl);
+  }
+
+  .az-card__body {
+    padding: 12px;
+  }
+
+  .az-card__header {
+    padding: 12px;
+  }
+
+  .scanner-wrapper {
+    max-width: 100%;
+    border-radius: 8px;
+  }
+
+  .scanner-overlay__corner--tl,
+  .scanner-overlay__corner--tr {
+    top: 16%;
+  }
+
+  .scanner-overlay__corner--bl,
+  .scanner-overlay__corner--br {
+    bottom: 16%;
+  }
+
+  .scanner-overlay__corner--tl,
+  .scanner-overlay__corner--bl {
+    left: 16%;
+  }
+
+  .scanner-overlay__corner--tr,
+  .scanner-overlay__corner--br {
+    right: 16%;
+  }
+
+  .scanner-overlay__line {
+    left: 16%;
+    right: 16%;
+  }
+
+  .scanner-controls .el-button {
+    width: 100%;
+    max-width: 420px;
+    height: 46px;
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  .sign-history__item {
+    padding: 10px 0;
+  }
+
+  .sign-history__url {
+    font-size: 11px;
+  }
+}
+
+/* 小屏手机 (<=480px) */
+@media (max-width: 480px) {
+  .az-header {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .az-header__brand {
+    font-size: 16px;
+  }
+
+  .az-page {
+    padding: 10px;
+  }
+
+  .az-card__title {
+    font-size: 15px;
+  }
+
+  .az-card__subtitle {
+    font-size: 11px;
+  }
+
+  .scanner-controls .el-button {
+    height: 44px;
+    font-size: 15px;
+  }
+}
