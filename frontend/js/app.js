@@ -88,7 +88,7 @@ const App = {
                 <el-slider
                   v-model="zoomValue"
                   :min="1"
-                  :max="5"
+                  :max="3"
                   :step="0.1"
                   :show-tooltip="false"
                   @input="onManualZoomChange"
@@ -165,7 +165,7 @@ const App = {
     let lastManualZoomAt = 0;
     let lastAutoZoomAt = 0;
     const ZOOM_MIN = 1;
-    const ZOOM_MAX = 5;
+    const ZOOM_MAX = 3;
     const ZOOM_STEP = 0.1;
 
     // 格式化当前时间
@@ -244,26 +244,8 @@ const App = {
       const reader = document.getElementById('qr-reader');
       const video = reader?.querySelector('video');
       if (!video) return;
-
-      if (level <= 1) {
-        // 无缩放：正常显示
-        video.style.objectFit = 'cover';
-        video.style.width = '100%';
-        video.style.height = '100%';
-        video.style.objectPosition = 'center center';
-      } else {
-        // 裁切变焦：将 video 元素放大后容器 overflow:hidden 裁切中心区域
-        // 因为流本身是高分辨率，裁切后仍有充足像素，不会模糊
-        const pct = level * 100;
-        video.style.objectFit = 'cover';
-        video.style.width = `${pct}%`;
-        video.style.height = `${pct}%`;
-        // 居中裁切
-        video.style.objectPosition = 'center center';
-        video.style.position = 'absolute';
-        video.style.left = `${-(pct - 100) / 2}%`;
-        video.style.top = `${-(pct - 100) / 2}%`;
-      }
+      video.style.transform = level > 1 ? `scale(${level})` : '';
+      video.style.transformOrigin = 'center center';
     };
 
     const onManualZoomChange = (value) => {
@@ -319,13 +301,8 @@ const App = {
       const reader = document.getElementById('qr-reader');
       const video = reader?.querySelector('video');
       if (video) {
-        video.style.objectFit = '';
-        video.style.width = '';
-        video.style.height = '';
-        video.style.objectPosition = '';
-        video.style.position = '';
-        video.style.left = '';
-        video.style.top = '';
+        video.style.transform = '';
+        video.style.transformOrigin = '';
       }
     };
 

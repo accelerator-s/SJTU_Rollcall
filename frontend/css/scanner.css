@@ -12,18 +12,15 @@
 
 .scanner-wrapper #qr-reader {
   width: 100% !important;
-  height: 100% !important;
   border: none !important;
-  position: relative;
-  overflow: hidden;
 }
 
 .scanner-wrapper #qr-reader video {
-  /* 默认值，JS 变焦时会覆盖 */
-  width: 100%;
-  height: 100%;
+  width: 100% !important;
+  height: 100% !important;
   object-fit: cover;
   border-radius: var(--radius-md);
+  transition: transform 0.15s ease;
 }
 
 .scanner-blackout {
