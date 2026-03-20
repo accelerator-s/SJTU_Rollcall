@@ -1,7 +1,7 @@
 // Vue 根实例：签到扫码主应用
 import api from '/static/js/api.js';
 
-const { createApp, ref, onMounted, onUnmounted, nextTick } = Vue;
+const { createApp, ref, computed, onMounted, onUnmounted, nextTick } = Vue;
 const { ElMessage } = ElementPlus;
 
 // 内联 SVG 图标
@@ -78,6 +78,9 @@ const App = {
                   <div class="scanner-overlay__corner scanner-overlay__corner--br"></div>
                   <div class="scanner-overlay__line"></div>
                 </div>
+                <svg class="scanner-qr-box" v-if="qrBoxVisible" viewBox="0 0 100 100" preserveAspectRatio="none">
+                  <polygon :points="qrBoxSvgPoints" />
+                </svg>
                 <div class="scanner-processing" v-if="processing">
                   <div class="scanner-processing__spinner"></div>
                   <div class="scanner-processing__text">识别中...</div>
@@ -157,6 +160,8 @@ const App = {
     const history = ref([]);
     const blackout = ref(false);
     const zoomValue = ref(1);
+    const qrBoxVisible = ref(false);
+    const qrBoxSvgPoints = ref('');
 
     let scanner = null;
     let historyIdCounter = 0;
@@ -192,8 +197,62 @@ const App = {
       ElMessage.success('已清空签到记录');
     };
 
+    // ---- QR 定位提示框 ----
+    let qrBoxTimer = null;
+    const showQrBoundingBox = (cornerPoints, sourceW, sourceH, fromCrop) => {
+      if (!cornerPoints || cornerPoints.length < 3) {
+        qrBoxVisible.value = false;
+        return;
+      }
+      const reader = document.getElementById('qr-reader');
+      const video = reader?.querySelector('video');
+      if (!video) return;
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (!vw || !vh) return;
+
+      let displayPoints;
+      if (fromCrop) {
+        // 裁切扫描器坐标 → 直接映射到显示百分比
+        displayPoints = cornerPoints.map(p => ({
+          x: (p.x / sourceW) * 100,
+          y: (p.y / sourceH) * 100,
+        }));
+      } else {
+        // html5-qrcode 坐标 → 考虑 object-fit:cover 裁切 + CSS zoom
+        const vMin = Math.min(vw, vh);
+        const zoom = zoomValue.value;
+        const visW = vMin / zoom;
+        const visH = vMin / zoom;
+        const visX = (vw - visW) / 2;
+        const visY = (vh - visH) / 2;
+        displayPoints = cornerPoints.map(p => ({
+          x: ((p.x - visX) / visW) * 100,
+          y: ((p.y - visY) / visH) * 100,
+        }));
+      }
+
+      qrBoxSvgPoints.value = displayPoints
+        .map(p => `${Math.max(0, Math.min(100, p.x))},${Math.max(0, Math.min(100, p.y))}`)
+        .join(' ');
+      qrBoxVisible.value = true;
+
+      clearTimeout(qrBoxTimer);
+      qrBoxTimer = setTimeout(() => { qrBoxVisible.value = false; }, 600);
+    };
+
     // 二维码扫描成功回调
     const onScanSuccess = async (decodedText, decodedResult) => {
+      // 尝试显示 QR 定位框（即使正在处理中也显示）
+      const cbPoints = decodedResult?.result?.cornerPoints || decodedResult?.cornerPoints;
+      if (cbPoints && cbPoints.length >= 3 && !decodedResult?._sourceWidth) {
+        const _reader = document.getElementById('qr-reader');
+        const _video = _reader?.querySelector('video');
+        if (_video?.videoWidth) {
+          showQrBoundingBox(cbPoints, _video.videoWidth, _video.videoHeight, false);
+        }
+      }
+
       if (processing.value) {
         return;
       }
@@ -276,8 +335,8 @@ const App = {
 
       const reader = document.getElementById('qr-reader');
       const video = reader?.querySelector('video');
-      const fw = video?.videoWidth || 0;
-      const fh = video?.videoHeight || 0;
+      const fw = decodedResult?._sourceWidth || video?.videoWidth || 0;
+      const fh = decodedResult?._sourceHeight || video?.videoHeight || 0;
       if (!fw || !fh) return;
 
       // 二维码在画面中占比越小 → 需要放大
@@ -296,6 +355,86 @@ const App = {
     const getZoomLabel = () => {
       const rounded = Math.round(zoomValue.value * 10) / 10;
       return `${rounded.toFixed(1)}x`;
+    };
+
+    // ---- 裁切扫描器：zoom > 1 时对可见区域单独解码，提升识别率 ----
+    let cropScanTimer = null;
+    let cropCanvas = null;
+    let cropCtx = null;
+    let qrDetector = null;
+
+    const initCropScanner = () => {
+      if (!cropCanvas) {
+        cropCanvas = document.createElement('canvas');
+        cropCtx = cropCanvas.getContext('2d', { willReadFrequently: true });
+      }
+      if (!qrDetector && typeof BarcodeDetector !== 'undefined') {
+        try {
+          qrDetector = new BarcodeDetector({ formats: ['qr_code'] });
+        } catch (e) {
+          console.warn('BarcodeDetector unavailable:', e);
+        }
+      }
+    };
+
+    let cropBusy = false;
+    const doCropScan = async () => {
+      if (cropBusy) return;
+      cropBusy = true;
+      try {
+        const reader = document.getElementById('qr-reader');
+        const video = reader?.querySelector('video');
+        if (!video || video.readyState < 2) return;
+
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        if (!vw || !vh) return;
+
+        const zoom = zoomValue.value;
+        const vMin = Math.min(vw, vh);
+
+        // 裁切可见区域（与 CSS zoom + object-fit:cover 对应的区域）
+        const cropW = Math.round(vMin / zoom);
+        const cropH = Math.round(vMin / zoom);
+        const cropX = Math.round((vw - cropW) / 2);
+        const cropY = Math.round((vh - cropH) / 2);
+
+        const canvasSize = Math.min(vMin, 1080);
+        cropCanvas.width = canvasSize;
+        cropCanvas.height = canvasSize;
+        cropCtx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, canvasSize, canvasSize);
+
+        const results = await qrDetector.detect(cropCanvas);
+        if (results.length > 0) {
+          const qr = results[0];
+          showQrBoundingBox(qr.cornerPoints, canvasSize, canvasSize, true);
+          onScanSuccess(qr.rawValue, {
+            result: { cornerPoints: qr.cornerPoints },
+            _sourceWidth: canvasSize,
+            _sourceHeight: canvasSize,
+          });
+        }
+      } catch (e) { /* ignore */ }
+      finally { cropBusy = false; }
+    };
+
+    const startCropScanning = () => {
+      stopCropScanning();
+      initCropScanner();
+      if (!qrDetector) return;
+      cropScanTimer = setInterval(() => {
+        if (!scanning.value || processing.value) return;
+        if (zoomValue.value <= 1.05) return;
+        doCropScan();
+      }, 200);
+    };
+
+    const stopCropScanning = () => {
+      if (cropScanTimer) {
+        clearInterval(cropScanTimer);
+        cropScanTimer = null;
+      }
+      qrBoxVisible.value = false;
     };
 
     const resetZoom = () => {
@@ -381,6 +520,7 @@ const App = {
 
         scanning.value = true;
         resetZoom();
+        startCropScanning();
       } catch (err) {
         const errName = err?.name || '';
         if (err?.message === 'BROWSER_CAMERA_API_UNSUPPORTED') {
@@ -397,6 +537,7 @@ const App = {
     };
 
     const stopScanner = async ({ keepBlackout = false } = {}) => {
+      stopCropScanning();
       if (scanner) {
         try {
           await scanner.stop();
@@ -439,6 +580,8 @@ const App = {
       getZoomLabel,
       onManualZoomChange,
       clearHistory,
+      qrBoxVisible,
+      qrBoxSvgPoints,
     };
   },
 };

@@ -127,6 +127,24 @@
   100% { top: 80%; opacity: 0; }
 }
 
+/* QR 定位提示框 */
+.scanner-qr-box {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 12;
+  pointer-events: none;
+}
+
+.scanner-qr-box polygon {
+  fill: rgba(0, 200, 83, 0.12);
+  stroke: #00c853;
+  stroke-width: 0.6;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 3px rgba(0, 200, 83, 0.5));
+}
+
 /* 扫码控制 */
 .scanner-controls {
   display: flex;
