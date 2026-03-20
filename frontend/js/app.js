@@ -343,57 +343,69 @@ const App = {
           },
         };
 
-        const cameraOptions = [];
-
-        try {
-          const cameras = await Html5Qrcode.getCameras();
-          if (Array.isArray(cameras) && cameras.length > 0) {
-            const rearCamera = cameras.find((camera) => {
-              const label = (camera?.label || '').toLowerCase();
-              return (
-                label.includes('back')
-                || label.includes('rear')
-                || label.includes('environment')
-                || label.includes('后置')
-                || label.includes('广角')
-                || label.includes('主摄')
-              );
-            });
-
-            if (rearCamera?.id) {
-              cameraOptions.push({ deviceId: { exact: rearCamera.id } });
-            } else {
-              const frontCamera = cameras.find((camera) => {
-                const label = (camera?.label || '').toLowerCase();
-                return (
-                  label.includes('front')
-                  || label.includes('user')
-                  || label.includes('前置')
-                );
-              });
-
-              if (frontCamera?.id) {
-                cameraOptions.push({ deviceId: { exact: frontCamera.id } });
-              }
-            }
-          }
-        } catch { /* noop */ }
-
-        if (cameraOptions.length === 0) {
-          cameraOptions.push({ facingMode: 'user' });
-        }
-
         let started = false;
         let lastError = null;
 
-        for (const cameraOption of cameraOptions) {
+        const tryStart = async (cameraOption) => {
           try {
             await scanner.start(cameraOption, config, onScanSuccess, () => {});
             started = true;
-            break;
+            return true;
           } catch (error) {
             lastError = error;
+            return false;
           }
+        };
+
+        // 1) 强制优先后置：先尝试 environment（不枚举设备，启动更快）
+        await tryStart({ facingMode: { exact: 'environment' } });
+        if (!started) {
+          await tryStart({ facingMode: 'environment' });
+        }
+
+        // 2) 若上面失败，再枚举设备找后置 deviceId 精确启动
+        if (!started) {
+          try {
+            const cameras = await Html5Qrcode.getCameras();
+            if (Array.isArray(cameras) && cameras.length > 0) {
+              const rearCamera = cameras.find((camera) => {
+                const label = (camera?.label || '').toLowerCase();
+                return (
+                  label.includes('back')
+                  || label.includes('rear')
+                  || label.includes('environment')
+                  || label.includes('后置')
+                  || label.includes('广角')
+                  || label.includes('主摄')
+                );
+              });
+
+              if (rearCamera?.id) {
+                await tryStart({ deviceId: { exact: rearCamera.id } });
+              }
+
+              // 3) 仅在没有后置或后置失败时，才回退前置
+              if (!started) {
+                const frontCamera = cameras.find((camera) => {
+                  const label = (camera?.label || '').toLowerCase();
+                  return (
+                    label.includes('front')
+                    || label.includes('user')
+                    || label.includes('前置')
+                  );
+                });
+
+                if (frontCamera?.id) {
+                  await tryStart({ deviceId: { exact: frontCamera.id } });
+                }
+              }
+            }
+          } catch { /* noop */ }
+        }
+
+        // 4) 设备标签不可用时，最后兜底前置
+        if (!started) {
+          await tryStart({ facingMode: 'user' });
         }
 
         if (!started) {
