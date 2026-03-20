@@ -240,28 +240,100 @@ const App = {
     };
 
     const getVideoTrack = () => {
+      // 方法 1: 从 html5-qrcode 内部属性获取 (最可靠)
+      if (scanner) {
+        try {
+          const internalStream = scanner.localMediaStream;
+          if (internalStream instanceof MediaStream) {
+            const track = internalStream.getVideoTracks()[0];
+            if (track) {
+              console.log('[zoom] 从 scanner.localMediaStream 获取到 track');
+              return track;
+            }
+          }
+        } catch { /* noop */ }
+
+        // 遍历 scanner 实例的所有属性寻找 MediaStream
+        try {
+          for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(scanner)).concat(Object.keys(scanner))) {
+            try {
+              const val = scanner[key];
+              if (val instanceof MediaStream) {
+                const track = val.getVideoTracks()[0];
+                if (track) {
+                  console.log(`[zoom] 从 scanner.${key} 获取到 track`);
+                  return track;
+                }
+              }
+            } catch { /* getter 可能抛异常 */ }
+          }
+        } catch { /* noop */ }
+      }
+
+      // 方法 2: 从 DOM video 元素获取
       const reader = document.getElementById('qr-reader');
       const video = reader?.querySelector('video');
-      const stream = video?.srcObject;
-      if (stream && stream instanceof MediaStream) {
-        return stream.getVideoTracks()[0] || null;
+      if (video?.srcObject instanceof MediaStream) {
+        const track = video.srcObject.getVideoTracks()[0];
+        if (track) {
+          console.log('[zoom] 从 video.srcObject 获取到 track');
+          return track;
+        }
       }
+
+      // 方法 3: 从 video.captureStream 获取
+      if (video && typeof video.captureStream === 'function') {
+        try {
+          const stream = video.captureStream();
+          const track = stream.getVideoTracks()[0];
+          if (track) {
+            console.log('[zoom] 从 video.captureStream() 获取到 track');
+            return track;
+          }
+        } catch { /* noop */ }
+      }
+
+      console.warn('[zoom] 未找到可用的 video track');
       return null;
     };
 
-    const setupZoomControls = async () => {
+    const setupZoomControls = async (retryCount = 0) => {
+      const MAX_RETRIES = 6;
       try {
         const track = getVideoTrack();
         if (!track) {
+          if (retryCount < MAX_RETRIES) {
+            console.log(`[zoom] track 未就绪, 第 ${retryCount + 1}/${MAX_RETRIES} 次重试...`);
+            setTimeout(() => setupZoomControls(retryCount + 1), 600);
+            return;
+          }
           zoomSupported.value = false;
+          console.warn('[zoom] 多次重试后仍未获取到 track');
           return;
         }
 
-        const capabilities = track.getCapabilities?.();
-        const settings = track.getSettings?.();
+        // 某些设备需要等 track 进入 live 状态
+        if (track.readyState !== 'live') {
+          if (retryCount < MAX_RETRIES) {
+            console.log(`[zoom] track 状态为 ${track.readyState}, 等待 live...`);
+            setTimeout(() => setupZoomControls(retryCount + 1), 600);
+            return;
+          }
+        }
+
+        const capabilities = typeof track.getCapabilities === 'function'
+          ? track.getCapabilities()
+          : null;
+        const settings = typeof track.getSettings === 'function'
+          ? track.getSettings()
+          : null;
+
+        console.log('[zoom] track capabilities:', JSON.stringify(capabilities));
+        console.log('[zoom] track settings:', JSON.stringify(settings));
+
         const zoomCap = capabilities?.zoom;
 
-        if (typeof zoomCap?.min !== 'number' || typeof zoomCap?.max !== 'number') {
+        if (typeof zoomCap?.min !== 'number' || typeof zoomCap?.max !== 'number' || zoomCap.min >= zoomCap.max) {
           zoomSupported.value = false;
           console.log('[zoom] 当前摄像头不支持缩放');
           return;
@@ -281,10 +353,15 @@ const App = {
         zoomValue.value = clampZoom(current);
 
         await track.applyConstraints({ advanced: [{ zoom: zoomValue.value }] });
-        console.log(`[zoom] 已启用缩放 min=${zoomMin.value} max=${zoomMax.value} step=${zoomStep.value}`);
+        console.log(`[zoom] 已启用缩放 min=${zoomMin.value} max=${zoomMax.value} step=${zoomStep.value} current=${zoomValue.value}`);
       } catch (e) {
+        if (retryCount < MAX_RETRIES) {
+          console.log(`[zoom] 初始化异常, 第 ${retryCount + 1}/${MAX_RETRIES} 次重试...`, e);
+          setTimeout(() => setupZoomControls(retryCount + 1), 600);
+          return;
+        }
         zoomSupported.value = false;
-        console.warn('[zoom] 初始化缩放失败', e);
+        console.warn('[zoom] 初始化缩放最终失败', e);
       }
     };
 
@@ -449,7 +526,7 @@ const App = {
 
         scanning.value = true;
         // 延迟初始化缩放，确保 video 元素已挂载并获得视频流
-        setTimeout(() => setupZoomControls(), 500);
+        setTimeout(() => setupZoomControls(0), 300);
       } catch (err) {
         const errName = err?.name || '';
         if (err?.message === 'BROWSER_CAMERA_API_UNSUPPORTED') {

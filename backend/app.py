@@ -415,14 +415,23 @@ async def sign_endpoint(req: SignRequest):
     return result
 
 
+def _mask_jaccount(raw: str) -> str:
+    """对 jAccount 用户名做脱敏处理，仅保留首尾各一字符。"""
+    if not raw:
+        return ""
+    if len(raw) <= 2:
+        return raw[0] + "*"
+    return raw[0] + "*" * (len(raw) - 2) + raw[-1]
+
+
 @app.get("/api/status")
 async def status_endpoint():
-    """返回当前配置状态（是否已配置账号）。"""
+    """返回当前配置状态"""
     config = app.state.config
     configured = bool(config.get("jaccount")) and bool(config.get("password"))
     return {
         "configured": configured,
-        "jaccount": config.get("jaccount", ""),
+        "jaccount": _mask_jaccount(config.get("jaccount", "")),
     }
 
 
