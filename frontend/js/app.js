@@ -343,11 +343,45 @@ const App = {
           },
         };
 
-        const cameraOptions = [
-          { facingMode: { exact: 'environment' } },
-          { facingMode: 'environment' },
-          { facingMode: 'user' },
-        ];
+        const cameraOptions = [];
+
+        try {
+          const cameras = await Html5Qrcode.getCameras();
+          if (Array.isArray(cameras) && cameras.length > 0) {
+            const rearCamera = cameras.find((camera) => {
+              const label = (camera?.label || '').toLowerCase();
+              return (
+                label.includes('back')
+                || label.includes('rear')
+                || label.includes('environment')
+                || label.includes('后置')
+                || label.includes('广角')
+                || label.includes('主摄')
+              );
+            });
+
+            if (rearCamera?.id) {
+              cameraOptions.push({ deviceId: { exact: rearCamera.id } });
+            } else {
+              const frontCamera = cameras.find((camera) => {
+                const label = (camera?.label || '').toLowerCase();
+                return (
+                  label.includes('front')
+                  || label.includes('user')
+                  || label.includes('前置')
+                );
+              });
+
+              if (frontCamera?.id) {
+                cameraOptions.push({ deviceId: { exact: frontCamera.id } });
+              }
+            }
+          }
+        } catch { /* noop */ }
+
+        if (cameraOptions.length === 0) {
+          cameraOptions.push({ facingMode: 'user' });
+        }
 
         let started = false;
         let lastError = null;
