@@ -320,23 +320,6 @@ const App = {
       }
     };
 
-    const requestCameraPermission = async () => {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('BROWSER_CAMERA_API_UNSUPPORTED');
-      }
-
-      // 请求最高分辨率，为数字变焦提供足够像素余量
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 3840 },
-          height: { ideal: 2160 },
-          facingMode: 'environment',
-        },
-        audio: false,
-      });
-      stream.getTracks().forEach((track) => track.stop());
-    };
-
     const startScanner = async () => {
       await nextTick();
       blackout.value = false;
@@ -346,33 +329,25 @@ const App = {
       }
 
       try {
-        await requestCameraPermission();
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error('BROWSER_CAMERA_API_UNSUPPORTED');
+        }
 
         const config = {
-          fps: 5,
+          fps: 10,
           qrbox: (viewfinderWidth, viewfinderHeight) => {
             const size = Math.min(viewfinderWidth, viewfinderHeight) * 0.6;
             return { width: size, height: size };
           },
           aspectRatio: 1,
-          videoConstraints: {
-            width: { ideal: 3840 },
-            height: { ideal: 2160 },
-          },
         };
 
+        // 直接尝试启动，不预先请求权限/枚举设备，避免多次开关摄像头
         const cameraOptions = [
           { facingMode: { exact: 'environment' } },
           { facingMode: 'environment' },
           { facingMode: 'user' },
         ];
-
-        try {
-          const cameras = await Html5Qrcode.getCameras();
-          if (Array.isArray(cameras) && cameras.length > 0) {
-            cameraOptions.push({ deviceId: { exact: cameras[0].id } });
-          }
-        } catch { /* noop */ }
 
         let started = false;
         let lastError = null;
