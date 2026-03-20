@@ -83,16 +83,6 @@ const App = {
                   <div class="scanner-processing__text">识别中...</div>
                 </div>
               </div>
-              <div class="scanner-controls">
-                <el-button
-                  :type="scanning ? 'danger' : 'primary'"
-                  size="large"
-                  @click="toggleScanner"
-                  :disabled="processing || !configured"
-                >
-                  {{ scanning ? '停止扫码' : '开始扫码' }}
-                </el-button>
-              </div>
               <div class="scanner-zoom-control" v-if="scanning">
                 <div class="scanner-zoom-control__title">缩放 {{ getZoomLabel() }}</div>
                 <el-slider
@@ -103,6 +93,16 @@ const App = {
                   :show-tooltip="false"
                   @input="onManualZoomChange"
                 />
+              </div>
+              <div class="scanner-controls">
+                <el-button
+                  :type="scanning ? 'danger' : 'primary'"
+                  size="large"
+                  @click="toggleScanner"
+                  :disabled="processing || !configured"
+                >
+                  {{ scanning ? '停止扫码' : '开始扫码' }}
+                </el-button>
               </div>
             </div>
           </div>
@@ -243,9 +243,26 @@ const App = {
     const applyVisualZoom = (level) => {
       const reader = document.getElementById('qr-reader');
       const video = reader?.querySelector('video');
-      if (video) {
-        video.style.transform = `scale(${level})`;
-        video.style.transformOrigin = 'center center';
+      if (!video) return;
+
+      if (level <= 1) {
+        // 无缩放：正常显示
+        video.style.objectFit = 'cover';
+        video.style.width = '100%';
+        video.style.height = '100%';
+        video.style.objectPosition = 'center center';
+      } else {
+        // 裁切变焦：将 video 元素放大后容器 overflow:hidden 裁切中心区域
+        // 因为流本身是高分辨率，裁切后仍有充足像素，不会模糊
+        const pct = level * 100;
+        video.style.objectFit = 'cover';
+        video.style.width = `${pct}%`;
+        video.style.height = `${pct}%`;
+        // 居中裁切
+        video.style.objectPosition = 'center center';
+        video.style.position = 'absolute';
+        video.style.left = `${-(pct - 100) / 2}%`;
+        video.style.top = `${-(pct - 100) / 2}%`;
       }
     };
 
@@ -299,7 +316,17 @@ const App = {
 
     const resetZoom = () => {
       zoomValue.value = 1;
-      applyVisualZoom(1);
+      const reader = document.getElementById('qr-reader');
+      const video = reader?.querySelector('video');
+      if (video) {
+        video.style.objectFit = '';
+        video.style.width = '';
+        video.style.height = '';
+        video.style.objectPosition = '';
+        video.style.position = '';
+        video.style.left = '';
+        video.style.top = '';
+      }
     };
 
     // 启动/停止扫码
@@ -321,8 +348,13 @@ const App = {
         throw new Error('BROWSER_CAMERA_API_UNSUPPORTED');
       }
 
+      // 请求最高分辨率，为数字变焦提供足够像素余量
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
+        video: {
+          width: { ideal: 3840 },
+          height: { ideal: 2160 },
+          facingMode: 'environment',
+        },
         audio: false,
       });
       stream.getTracks().forEach((track) => track.stop());
@@ -346,6 +378,10 @@ const App = {
             return { width: size, height: size };
           },
           aspectRatio: 1,
+          videoConstraints: {
+            width: { ideal: 3840 },
+            height: { ideal: 2160 },
+          },
         };
 
         const cameraOptions = [
