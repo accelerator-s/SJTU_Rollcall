@@ -333,18 +333,28 @@ const App = {
           throw new Error('BROWSER_CAMERA_API_UNSUPPORTED');
         }
 
-        const config = {
+        const makeConfig = (facingMode) => ({
           fps: 10,
           aspectRatio: 1,
           formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
-        };
+          videoConstraints: {
+            facingMode,
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+        });
 
         let started = false;
         let lastError = null;
 
-        const tryStart = async (cameraOption) => {
+        const tryStart = async (facingMode) => {
           try {
-            await scanner.start(cameraOption, config, onScanSuccess, () => {});
+            await scanner.start(
+              { facingMode },
+              makeConfig(facingMode),
+              onScanSuccess,
+              () => {},
+            );
             started = true;
             return true;
           } catch (error) {
@@ -353,15 +363,15 @@ const App = {
           }
         };
 
-        // 优先后置摄像头
-        await tryStart({ facingMode: { exact: 'environment' } });
+        // 优先后置摄像头 + 高分辨率
+        await tryStart({ exact: 'environment' });
         if (!started) {
-          await tryStart({ facingMode: 'environment' });
+          await tryStart('environment');
         }
 
         // 仅后置完全不可用时才回退前置
         if (!started) {
-          await tryStart({ facingMode: 'user' });
+          await tryStart('user');
         }
 
         if (!started) {
