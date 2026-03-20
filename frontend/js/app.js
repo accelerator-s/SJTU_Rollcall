@@ -28,7 +28,7 @@ const App = {
       <!-- 顶部栏 -->
       <div class="az-header">
         <div class="az-header__left">
-          <div class="az-header__brand">签到助手</div>
+          <div class="az-header__brand">SJTU 签到助手</div>
         </div>
         <div class="az-header__right">
           <div class="az-header__status" :class="{
@@ -221,6 +221,18 @@ const App = {
       }
     };
 
+    const requestCameraPermission = async () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('BROWSER_CAMERA_API_UNSUPPORTED');
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false,
+      });
+      stream.getTracks().forEach((track) => track.stop());
+    };
+
     const startScanner = async () => {
       await nextTick();
 
@@ -229,22 +241,59 @@ const App = {
       }
 
       try {
-        await scanner.start(
-          { facingMode: 'environment' },
-          {
-            fps: 5,
-            qrbox: (viewfinderWidth, viewfinderHeight) => {
-              const size = Math.min(viewfinderWidth, viewfinderHeight) * 0.6;
-              return { width: size, height: size };
-            },
-            aspectRatio: 1,
+        await requestCameraPermission();
+
+        const config = {
+          fps: 5,
+          qrbox: (viewfinderWidth, viewfinderHeight) => {
+            const size = Math.min(viewfinderWidth, viewfinderHeight) * 0.6;
+            return { width: size, height: size };
           },
-          onScanSuccess,
-          () => {},
-        );
+          aspectRatio: 1,
+        };
+
+        const cameraOptions = [
+          { facingMode: { exact: 'environment' } },
+          { facingMode: 'environment' },
+          { facingMode: 'user' },
+        ];
+
+        try {
+          const cameras = await Html5Qrcode.getCameras();
+          if (Array.isArray(cameras) && cameras.length > 0) {
+            cameraOptions.push({ deviceId: { exact: cameras[0].id } });
+          }
+        } catch { /* noop */ }
+
+        let started = false;
+        let lastError = null;
+
+        for (const cameraOption of cameraOptions) {
+          try {
+            await scanner.start(cameraOption, config, onScanSuccess, () => {});
+            started = true;
+            break;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+
+        if (!started) {
+          throw lastError || new Error('NO_CAMERA_AVAILABLE');
+        }
+
         scanning.value = true;
       } catch (err) {
-        ElMessage.error('无法启动摄像头，请检查权限设置');
+        const errName = err?.name || '';
+        if (err?.message === 'BROWSER_CAMERA_API_UNSUPPORTED') {
+          ElMessage.error('当前浏览器不支持摄像头调用，请更换为最新版 Chrome/Edge');
+        } else if (errName === 'NotAllowedError' || errName === 'PermissionDeniedError') {
+          ElMessage.error('摄像头权限被拒绝，请在浏览器地址栏中允许摄像头后重试');
+        } else if (errName === 'NotFoundError' || errName === 'DevicesNotFoundError') {
+          ElMessage.error('未检测到可用摄像头设备');
+        } else {
+          ElMessage.error('无法启动摄像头，请确认浏览器权限与摄像头设备可用');
+        }
         console.error('Camera start error:', err);
       }
     };
