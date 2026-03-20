@@ -93,15 +93,15 @@ const App = {
                   {{ scanning ? '停止扫码' : '开始扫码' }}
                 </el-button>
               </div>
-              <div class="scanner-zoom-control" v-if="scanning && zoomSupported">
+              <div class="scanner-zoom-control" v-if="scanning">
                 <div class="scanner-zoom-control__title">缩放 {{ getZoomLabel() }}</div>
                 <el-slider
                   v-model="zoomValue"
-                  :min="zoomMin"
-                  :max="zoomMax"
-                  :step="zoomStep"
+                  :min="1"
+                  :max="5"
+                  :step="0.1"
                   :show-tooltip="false"
-                  @change="onManualZoomChange"
+                  @input="onManualZoomChange"
                 />
               </div>
             </div>
@@ -156,10 +156,6 @@ const App = {
     const processing = ref(false);
     const history = ref([]);
     const blackout = ref(false);
-    const zoomSupported = ref(false);
-    const zoomMin = ref(1);
-    const zoomMax = ref(1);
-    const zoomStep = ref(0.1);
     const zoomValue = ref(1);
 
     let scanner = null;
@@ -168,6 +164,9 @@ const App = {
     let lastScannedTime = 0;
     let lastManualZoomAt = 0;
     let lastAutoZoomAt = 0;
+    const ZOOM_MIN = 1;
+    const ZOOM_MAX = 5;
+    const ZOOM_STEP = 0.1;
 
     // 格式化当前时间
     const formatTime = () => {
@@ -235,217 +234,72 @@ const App = {
       }
     };
 
+    // ---- CSS 软件变焦 (不依赖硬件 zoom API，100% 兼容) ----
+
     const clampZoom = (value) => {
-      return Math.min(zoomMax.value, Math.max(zoomMin.value, value));
+      return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
     };
 
-    const getVideoTrack = () => {
-      // 方法 1: 从 html5-qrcode 内部属性获取 (最可靠)
-      if (scanner) {
-        try {
-          const internalStream = scanner.localMediaStream;
-          if (internalStream instanceof MediaStream) {
-            const track = internalStream.getVideoTracks()[0];
-            if (track) {
-              console.log('[zoom] 从 scanner.localMediaStream 获取到 track');
-              return track;
-            }
-          }
-        } catch { /* noop */ }
-
-        // 遍历 scanner 实例的所有属性寻找 MediaStream
-        try {
-          for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(scanner)).concat(Object.keys(scanner))) {
-            try {
-              const val = scanner[key];
-              if (val instanceof MediaStream) {
-                const track = val.getVideoTracks()[0];
-                if (track) {
-                  console.log(`[zoom] 从 scanner.${key} 获取到 track`);
-                  return track;
-                }
-              }
-            } catch { /* getter 可能抛异常 */ }
-          }
-        } catch { /* noop */ }
-      }
-
-      // 方法 2: 从 DOM video 元素获取
+    const applyVisualZoom = (level) => {
       const reader = document.getElementById('qr-reader');
       const video = reader?.querySelector('video');
-      if (video?.srcObject instanceof MediaStream) {
-        const track = video.srcObject.getVideoTracks()[0];
-        if (track) {
-          console.log('[zoom] 从 video.srcObject 获取到 track');
-          return track;
-        }
-      }
-
-      // 方法 3: 从 video.captureStream 获取
-      if (video && typeof video.captureStream === 'function') {
-        try {
-          const stream = video.captureStream();
-          const track = stream.getVideoTracks()[0];
-          if (track) {
-            console.log('[zoom] 从 video.captureStream() 获取到 track');
-            return track;
-          }
-        } catch { /* noop */ }
-      }
-
-      console.warn('[zoom] 未找到可用的 video track');
-      return null;
-    };
-
-    const setupZoomControls = async (retryCount = 0) => {
-      const MAX_RETRIES = 6;
-      try {
-        const track = getVideoTrack();
-        if (!track) {
-          if (retryCount < MAX_RETRIES) {
-            console.log(`[zoom] track 未就绪, 第 ${retryCount + 1}/${MAX_RETRIES} 次重试...`);
-            setTimeout(() => setupZoomControls(retryCount + 1), 600);
-            return;
-          }
-          zoomSupported.value = false;
-          console.warn('[zoom] 多次重试后仍未获取到 track');
-          return;
-        }
-
-        // 某些设备需要等 track 进入 live 状态
-        if (track.readyState !== 'live') {
-          if (retryCount < MAX_RETRIES) {
-            console.log(`[zoom] track 状态为 ${track.readyState}, 等待 live...`);
-            setTimeout(() => setupZoomControls(retryCount + 1), 600);
-            return;
-          }
-        }
-
-        const capabilities = typeof track.getCapabilities === 'function'
-          ? track.getCapabilities()
-          : null;
-        const settings = typeof track.getSettings === 'function'
-          ? track.getSettings()
-          : null;
-
-        console.log('[zoom] track capabilities:', JSON.stringify(capabilities));
-        console.log('[zoom] track settings:', JSON.stringify(settings));
-
-        const zoomCap = capabilities?.zoom;
-
-        if (typeof zoomCap?.min !== 'number' || typeof zoomCap?.max !== 'number' || zoomCap.min >= zoomCap.max) {
-          zoomSupported.value = false;
-          console.log('[zoom] 当前摄像头不支持缩放');
-          return;
-        }
-
-        zoomSupported.value = true;
-        zoomMin.value = zoomCap.min;
-        zoomMax.value = zoomCap.max;
-
-        if (typeof zoomCap.step === 'number' && zoomCap.step > 0) {
-          zoomStep.value = zoomCap.step;
-        } else {
-          zoomStep.value = Math.max(0.1, (zoomCap.max - zoomCap.min) / 20);
-        }
-
-        const current = typeof settings?.zoom === 'number' ? settings.zoom : zoomMin.value;
-        zoomValue.value = clampZoom(current);
-
-        await track.applyConstraints({ advanced: [{ zoom: zoomValue.value }] });
-        console.log(`[zoom] 已启用缩放 min=${zoomMin.value} max=${zoomMax.value} step=${zoomStep.value} current=${zoomValue.value}`);
-      } catch (e) {
-        if (retryCount < MAX_RETRIES) {
-          console.log(`[zoom] 初始化异常, 第 ${retryCount + 1}/${MAX_RETRIES} 次重试...`, e);
-          setTimeout(() => setupZoomControls(retryCount + 1), 600);
-          return;
-        }
-        zoomSupported.value = false;
-        console.warn('[zoom] 初始化缩放最终失败', e);
+      if (video) {
+        video.style.transform = `scale(${level})`;
+        video.style.transformOrigin = 'center center';
       }
     };
 
-    const applyZoom = async (targetZoom) => {
-      if (!zoomSupported.value) {
-        return;
-      }
-
-      const finalZoom = clampZoom(targetZoom);
-      if (Math.abs(finalZoom - zoomValue.value) < Math.max(zoomStep.value / 2, 0.01)) {
-        return;
-      }
-
-      try {
-        const track = getVideoTrack();
-        if (!track) return;
-        await track.applyConstraints({ advanced: [{ zoom: finalZoom }] });
-        zoomValue.value = finalZoom;
-      } catch {
-        // 部分设备仅支持固定倍数，忽略失败
-      }
-    };
-
-    const onManualZoomChange = async (value) => {
-      if (!zoomSupported.value) {
-        return;
-      }
-
+    const onManualZoomChange = (value) => {
       lastManualZoomAt = Date.now();
-      await applyZoom(value);
+      const clamped = clampZoom(value);
+      zoomValue.value = clamped;
+      applyVisualZoom(clamped);
     };
 
-    const maybeAdjustAutoZoom = async (decodedResult) => {
-      if (!zoomSupported.value) {
-        return;
-      }
-
+    const maybeAdjustAutoZoom = (decodedResult) => {
       const now = Date.now();
-      if (now - lastManualZoomAt < 3000 || now - lastAutoZoomAt < 350) {
+      if (now - lastManualZoomAt < 3000 || now - lastAutoZoomAt < 500) {
         return;
       }
 
-      // html5-qrcode v2 回调第二参数结构: { decodedText, result: { text, format, ... } }
-      // cornerPoints 可能在 decodedResult.result.cornerPoints 或 decodedResult 本身
       const points = decodedResult?.result?.cornerPoints
         || decodedResult?.cornerPoints;
       if (!Array.isArray(points) || points.length < 3) {
         return;
       }
 
-      const xs = points.map((point) => point.x);
-      const ys = points.map((point) => point.y);
-      const qrWidth = Math.max(...xs) - Math.min(...xs);
-      const qrHeight = Math.max(...ys) - Math.min(...ys);
+      const xs = points.map((p) => p.x);
+      const ys = points.map((p) => p.y);
+      const qrW = Math.max(...xs) - Math.min(...xs);
+      const qrH = Math.max(...ys) - Math.min(...ys);
 
       const reader = document.getElementById('qr-reader');
       const video = reader?.querySelector('video');
-      const frameWidth = video?.videoWidth || 0;
-      const frameHeight = video?.videoHeight || 0;
-      if (!frameWidth || !frameHeight) {
-        return;
-      }
+      const fw = video?.videoWidth || 0;
+      const fh = video?.videoHeight || 0;
+      if (!fw || !fh) return;
 
-      const ratio = (qrWidth * qrHeight) / (frameWidth * frameHeight);
-      let delta = 0;
-      if (ratio < 0.1) {
-        delta = zoomStep.value * 2;
-      } else if (ratio < 0.14) {
-        delta = zoomStep.value;
-      } else if (ratio > 0.3) {
-        delta = -zoomStep.value * 2;
-      } else if (ratio > 0.24) {
-        delta = -zoomStep.value;
-      }
+      // 二维码在画面中占比越小 → 需要放大
+      const ratio = Math.sqrt((qrW * qrH) / (fw * fh));
+      const idealRatio = 0.35;
+      const factor = idealRatio / Math.max(ratio, 0.01);
+      const target = clampZoom(zoomValue.value * Math.min(Math.max(factor, 0.85), 1.25));
 
-      if (delta !== 0) {
+      if (Math.abs(target - zoomValue.value) > 0.05) {
         lastAutoZoomAt = now;
-        await applyZoom(zoomValue.value + delta);
+        zoomValue.value = Math.round(target * 10) / 10;
+        applyVisualZoom(zoomValue.value);
       }
     };
 
     const getZoomLabel = () => {
       const rounded = Math.round(zoomValue.value * 10) / 10;
       return `${rounded.toFixed(1)}x`;
+    };
+
+    const resetZoom = () => {
+      zoomValue.value = 1;
+      applyVisualZoom(1);
     };
 
     // 启动/停止扫码
@@ -525,8 +379,7 @@ const App = {
         }
 
         scanning.value = true;
-        // 延迟初始化缩放，确保 video 元素已挂载并获得视频流
-        setTimeout(() => setupZoomControls(0), 300);
+        resetZoom();
       } catch (err) {
         const errName = err?.name || '';
         if (err?.message === 'BROWSER_CAMERA_API_UNSUPPORTED') {
@@ -549,6 +402,7 @@ const App = {
         } catch { /* noop */ }
       }
       scanning.value = false;
+      resetZoom();
       if (!keepBlackout) {
         blackout.value = false;
       }
@@ -578,10 +432,6 @@ const App = {
       scanning,
       processing,
       blackout,
-      zoomSupported,
-      zoomMin,
-      zoomMax,
-      zoomStep,
       zoomValue,
       history,
       toggleScanner,
