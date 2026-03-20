@@ -239,18 +239,31 @@ const App = {
       return Math.min(zoomMax.value, Math.max(zoomMin.value, value));
     };
 
-    const setupZoomControls = async () => {
-      if (!scanner) {
-        return;
+    const getVideoTrack = () => {
+      const reader = document.getElementById('qr-reader');
+      const video = reader?.querySelector('video');
+      const stream = video?.srcObject;
+      if (stream && stream instanceof MediaStream) {
+        return stream.getVideoTracks()[0] || null;
       }
+      return null;
+    };
 
+    const setupZoomControls = async () => {
       try {
-        const capabilities = scanner.getRunningTrackCapabilities?.();
-        const settings = scanner.getRunningTrackSettings?.();
+        const track = getVideoTrack();
+        if (!track) {
+          zoomSupported.value = false;
+          return;
+        }
+
+        const capabilities = track.getCapabilities?.();
+        const settings = track.getSettings?.();
         const zoomCap = capabilities?.zoom;
 
         if (typeof zoomCap?.min !== 'number' || typeof zoomCap?.max !== 'number') {
           zoomSupported.value = false;
+          console.log('[zoom] 当前摄像头不支持缩放');
           return;
         }
 
@@ -261,22 +274,22 @@ const App = {
         if (typeof zoomCap.step === 'number' && zoomCap.step > 0) {
           zoomStep.value = zoomCap.step;
         } else {
-          zoomStep.value = 0.1;
+          zoomStep.value = Math.max(0.1, (zoomCap.max - zoomCap.min) / 20);
         }
 
         const current = typeof settings?.zoom === 'number' ? settings.zoom : zoomMin.value;
         zoomValue.value = clampZoom(current);
 
-        await scanner.applyVideoConstraints?.({
-          advanced: [{ zoom: zoomValue.value }],
-        });
-      } catch {
+        await track.applyConstraints({ advanced: [{ zoom: zoomValue.value }] });
+        console.log(`[zoom] 已启用缩放 min=${zoomMin.value} max=${zoomMax.value} step=${zoomStep.value}`);
+      } catch (e) {
         zoomSupported.value = false;
+        console.warn('[zoom] 初始化缩放失败', e);
       }
     };
 
     const applyZoom = async (targetZoom) => {
-      if (!scanner || !zoomSupported.value) {
+      if (!zoomSupported.value) {
         return;
       }
 
@@ -286,9 +299,9 @@ const App = {
       }
 
       try {
-        await scanner.applyVideoConstraints?.({
-          advanced: [{ zoom: finalZoom }],
-        });
+        const track = getVideoTrack();
+        if (!track) return;
+        await track.applyConstraints({ advanced: [{ zoom: finalZoom }] });
         zoomValue.value = finalZoom;
       } catch {
         // 部分设备仅支持固定倍数，忽略失败
@@ -305,7 +318,7 @@ const App = {
     };
 
     const maybeAdjustAutoZoom = async (decodedResult) => {
-      if (!zoomSupported.value || !scanner) {
+      if (!zoomSupported.value) {
         return;
       }
 
@@ -314,7 +327,10 @@ const App = {
         return;
       }
 
-      const points = decodedResult?.result?.cornerPoints;
+      // html5-qrcode v2 回调第二参数结构: { decodedText, result: { text, format, ... } }
+      // cornerPoints 可能在 decodedResult.result.cornerPoints 或 decodedResult 本身
+      const points = decodedResult?.result?.cornerPoints
+        || decodedResult?.cornerPoints;
       if (!Array.isArray(points) || points.length < 3) {
         return;
       }
@@ -431,8 +447,9 @@ const App = {
           throw lastError || new Error('NO_CAMERA_AVAILABLE');
         }
 
-        await setupZoomControls();
         scanning.value = true;
+        // 延迟初始化缩放，确保 video 元素已挂载并获得视频流
+        setTimeout(() => setupZoomControls(), 500);
       } catch (err) {
         const errName = err?.name || '';
         if (err?.message === 'BROWSER_CAMERA_API_UNSUPPORTED') {
