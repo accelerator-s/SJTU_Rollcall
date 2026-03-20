@@ -70,7 +70,7 @@ const App = {
             <div class="az-card__body">
               <div class="scanner-wrapper">
                 <div id="qr-reader"></div>
-                <img class="scanner-frozen-frame" v-if="frozenFrame" :src="frozenFrame" alt="frozen-frame" />
+                <div class="scanner-blackout" v-if="blackout"></div>
                 <div class="scanner-overlay" v-if="scanning && !processing">
                   <div class="scanner-overlay__corner scanner-overlay__corner--tl"></div>
                   <div class="scanner-overlay__corner scanner-overlay__corner--tr"></div>
@@ -92,6 +92,17 @@ const App = {
                 >
                   {{ scanning ? '停止扫码' : '开始扫码' }}
                 </el-button>
+              </div>
+              <div class="scanner-zoom-control" v-if="scanning && zoomSupported">
+                <div class="scanner-zoom-control__title">缩放 {{ getZoomLabel() }}</div>
+                <el-slider
+                  v-model="zoomValue"
+                  :min="zoomMin"
+                  :max="zoomMax"
+                  :step="zoomStep"
+                  :show-tooltip="false"
+                  @change="onManualZoomChange"
+                />
               </div>
             </div>
           </div>
@@ -144,12 +155,19 @@ const App = {
     const scanning = ref(false);
     const processing = ref(false);
     const history = ref([]);
-    const frozenFrame = ref('');
+    const blackout = ref(false);
+    const zoomSupported = ref(false);
+    const zoomMin = ref(1);
+    const zoomMax = ref(1);
+    const zoomStep = ref(0.1);
+    const zoomValue = ref(1);
 
     let scanner = null;
     let historyIdCounter = 0;
     let lastScannedUrl = '';
     let lastScannedTime = 0;
+    let lastManualZoomAt = 0;
+    let lastAutoZoomAt = 0;
 
     // 格式化当前时间
     const formatTime = () => {
@@ -176,10 +194,12 @@ const App = {
     };
 
     // 二维码扫描成功回调
-    const onScanSuccess = async (decodedText) => {
+    const onScanSuccess = async (decodedText, decodedResult) => {
       if (processing.value) {
         return;
       }
+
+      void maybeAdjustAutoZoom(decodedResult);
 
       // 防抖：同一 URL 5 秒内不重复处理
       const now = Date.now();
@@ -194,9 +214,9 @@ const App = {
         return;
       }
 
-      captureFrozenFrame();
+      blackout.value = true;
       processing.value = true;
-      await stopScanner();
+      await stopScanner({ keepBlackout: true });
 
       try {
         const result = await api.sign(decodedText);
@@ -215,27 +235,124 @@ const App = {
       }
     };
 
-    const captureFrozenFrame = () => {
-      try {
-        const reader = document.getElementById('qr-reader');
-        const video = reader?.querySelector('video');
-        if (!video || !video.videoWidth || !video.videoHeight) {
-          return;
-        }
+    const clampZoom = (value) => {
+      return Math.min(zoomMax.value, Math.max(zoomMin.value, value));
+    };
 
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          return;
-        }
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        frozenFrame.value = canvas.toDataURL('image/jpeg', 0.9);
-      } catch {
-        frozenFrame.value = '';
+    const setupZoomControls = async () => {
+      if (!scanner) {
+        return;
       }
+
+      try {
+        const capabilities = scanner.getRunningTrackCapabilities?.();
+        const settings = scanner.getRunningTrackSettings?.();
+        const zoomCap = capabilities?.zoom;
+
+        if (typeof zoomCap?.min !== 'number' || typeof zoomCap?.max !== 'number') {
+          zoomSupported.value = false;
+          return;
+        }
+
+        zoomSupported.value = true;
+        zoomMin.value = zoomCap.min;
+        zoomMax.value = zoomCap.max;
+
+        if (typeof zoomCap.step === 'number' && zoomCap.step > 0) {
+          zoomStep.value = zoomCap.step;
+        } else {
+          zoomStep.value = 0.1;
+        }
+
+        const current = typeof settings?.zoom === 'number' ? settings.zoom : zoomMin.value;
+        zoomValue.value = clampZoom(current);
+
+        await scanner.applyVideoConstraints?.({
+          advanced: [{ zoom: zoomValue.value }],
+        });
+      } catch {
+        zoomSupported.value = false;
+      }
+    };
+
+    const applyZoom = async (targetZoom) => {
+      if (!scanner || !zoomSupported.value) {
+        return;
+      }
+
+      const finalZoom = clampZoom(targetZoom);
+      if (Math.abs(finalZoom - zoomValue.value) < Math.max(zoomStep.value / 2, 0.01)) {
+        return;
+      }
+
+      try {
+        await scanner.applyVideoConstraints?.({
+          advanced: [{ zoom: finalZoom }],
+        });
+        zoomValue.value = finalZoom;
+      } catch {
+        // 部分设备仅支持固定倍数，忽略失败
+      }
+    };
+
+    const onManualZoomChange = async (value) => {
+      if (!zoomSupported.value) {
+        return;
+      }
+
+      lastManualZoomAt = Date.now();
+      await applyZoom(value);
+    };
+
+    const maybeAdjustAutoZoom = async (decodedResult) => {
+      if (!zoomSupported.value || !scanner) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastManualZoomAt < 3000 || now - lastAutoZoomAt < 350) {
+        return;
+      }
+
+      const points = decodedResult?.result?.cornerPoints;
+      if (!Array.isArray(points) || points.length < 3) {
+        return;
+      }
+
+      const xs = points.map((point) => point.x);
+      const ys = points.map((point) => point.y);
+      const qrWidth = Math.max(...xs) - Math.min(...xs);
+      const qrHeight = Math.max(...ys) - Math.min(...ys);
+
+      const reader = document.getElementById('qr-reader');
+      const video = reader?.querySelector('video');
+      const frameWidth = video?.videoWidth || 0;
+      const frameHeight = video?.videoHeight || 0;
+      if (!frameWidth || !frameHeight) {
+        return;
+      }
+
+      const ratio = (qrWidth * qrHeight) / (frameWidth * frameHeight);
+      let delta = 0;
+      if (ratio < 0.1) {
+        delta = zoomStep.value * 2;
+      } else if (ratio < 0.14) {
+        delta = zoomStep.value;
+      } else if (ratio > 0.3) {
+        delta = -zoomStep.value * 2;
+      } else if (ratio > 0.24) {
+        delta = -zoomStep.value;
+      }
+
+      if (delta !== 0) {
+        lastAutoZoomAt = now;
+        await applyZoom(zoomValue.value + delta);
+      }
+    };
+
+    const getZoomLabel = () => {
+      const rounded = Math.round(zoomValue.value * 10) / 10;
+      return `${rounded.toFixed(1)}x`;
     };
 
     // 启动/停止扫码
@@ -266,7 +383,7 @@ const App = {
 
     const startScanner = async () => {
       await nextTick();
-      frozenFrame.value = '';
+      blackout.value = false;
 
       if (!scanner) {
         scanner = new Html5Qrcode('qr-reader');
@@ -314,6 +431,7 @@ const App = {
           throw lastError || new Error('NO_CAMERA_AVAILABLE');
         }
 
+        await setupZoomControls();
         scanning.value = true;
       } catch (err) {
         const errName = err?.name || '';
@@ -330,13 +448,16 @@ const App = {
       }
     };
 
-    const stopScanner = async () => {
+    const stopScanner = async ({ keepBlackout = false } = {}) => {
       if (scanner) {
         try {
           await scanner.stop();
         } catch { /* noop */ }
       }
       scanning.value = false;
+      if (!keepBlackout) {
+        blackout.value = false;
+      }
     };
 
     // 获取配置状态
@@ -362,9 +483,16 @@ const App = {
       jaccount,
       scanning,
       processing,
-      frozenFrame,
+      blackout,
+      zoomSupported,
+      zoomMin,
+      zoomMax,
+      zoomStep,
+      zoomValue,
       history,
       toggleScanner,
+      getZoomLabel,
+      onManualZoomChange,
       clearHistory,
     };
   },
