@@ -1,6 +1,7 @@
 import json
 import re
 import logging
+import time
 import urllib.parse
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -67,6 +68,23 @@ class SignRequest(BaseModel):
     qr_url: str
 
 
+def _extract_message_from_payload(payload):
+    if isinstance(payload, dict):
+        for key in ("message", "msg", "error", "detail"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    if isinstance(payload, str):
+        return payload.strip()
+    return ""
+
+
+def _contains_expired_hint(text: str) -> bool:
+    lowered = (text or "").lower()
+    hints = ("过期", "已结束", "已截止", "失效", "不存在", "expired", "closed")
+    return any(hint in lowered for hint in hints)
+
+
 def _do_sign(qr_url: str, username: str, password: str) -> dict:
     """执行完整的 jAccount 登录 + 签到流程。
 
@@ -124,33 +142,15 @@ def _do_sign(qr_url: str, username: str, password: str) -> dict:
     captcha_url = f"https://jaccount.sjtu.edu.cn/jaccount/captcha?uuid={uuid}"
     session.headers.update({"Referer": login_page_resp.url})
 
+    def _fetch_captcha_image():
+        target_url = captcha_url
+        session.get(target_url, timeout=10)
+        return session.get(target_url, timeout=10)
+
     try:
-        captcha_resp = session.get(captcha_url, timeout=10)
+        captcha_resp = _fetch_captcha_image()
     except http_requests.RequestException as e:
         return {"success": False, "message": f"获取验证码失败: {e}"}
-
-    try:
-        import ddddocr
-        ocr = ddddocr.DdddOcr(show_ad=False)
-        captcha_text = ocr.classification(captcha_resp.content).strip().lower()
-    except Exception as e:
-        return {"success": False, "message": f"验证码识别失败: {e}"}
-
-    logger.info("验证码识别结果: %s", captcha_text)
-
-    # 步骤 3：提交登录表单
-    payload = {
-        "sid": sid,
-        "client": client,
-        "returl": returl,
-        "se": se,
-        "v": v,
-        "uuid": uuid,
-        "user": username,
-        "pass": password,
-        "captcha": captcha_text,
-        "lt": lt,
-    }
 
     session.headers.update({
         "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -159,27 +159,67 @@ def _do_sign(qr_url: str, username: str, password: str) -> dict:
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
     })
 
-    try:
-        login_resp = session.post(
-            "https://jaccount.sjtu.edu.cn/jaccount/ulogin",
-            data=payload,
-            timeout=15,
-        )
-    except http_requests.RequestException as e:
-        return {"success": False, "message": f"登录请求失败: {e}"}
+    result = None
+    max_captcha_retry = 3
+    for attempt in range(1, max_captcha_retry + 1):
+        try:
+            import ddddocr
+            ocr = ddddocr.DdddOcr(show_ad=False)
+            raw_captcha = ocr.classification(captcha_resp.content)
+            captcha_text = raw_captcha.strip().lower()
+        except Exception as e:
+            return {"success": False, "message": f"验证码识别失败: {e}"}
 
-    try:
-        result = login_resp.json()
-    except json.JSONDecodeError:
-        return {"success": False, "message": "登录响应解析失败"}
+        logger.info("验证码识别结果(第 %d 次): %s", attempt, captcha_text)
+
+        payload = {
+            "sid": sid,
+            "client": client,
+            "returl": returl,
+            "se": se,
+            "v": v,
+            "uuid": uuid,
+            "user": username,
+            "pass": password,
+            "captcha": captcha_text,
+            "lt": lt,
+        }
+
+        try:
+            time.sleep(1)
+            login_resp = session.post(
+                "https://jaccount.sjtu.edu.cn/jaccount/ulogin",
+                data=payload,
+                timeout=15,
+            )
+        except http_requests.RequestException as e:
+            return {"success": False, "message": f"登录请求失败: {e}"}
+
+        try:
+            result = login_resp.json()
+        except json.JSONDecodeError:
+            return {"success": False, "message": "登录响应解析失败"}
+
+        errno = result.get("errno")
+        error = result.get("error")
+        code = result.get("code")
+        wrong_captcha = error == "Wrong captcha" or code == "WRONG_CAPTCHA"
+        if not wrong_captcha:
+            break
+
+        if attempt >= max_captcha_retry:
+            return {"success": False, "message": "验证码识别错误，3 次重试后仍失败"}
+
+        try:
+            captcha_resp = _fetch_captcha_image()
+        except http_requests.RequestException as e:
+            return {"success": False, "message": f"刷新验证码失败: {e}"}
+
+    if not isinstance(result, dict):
+        return {"success": False, "message": "登录响应异常"}
 
     errno = result.get("errno")
-    error = result.get("error")
     code = result.get("code")
-
-    if error == "Wrong captcha" or code == "WRONG_CAPTCHA":
-        return {"success": False, "message": "验证码识别错误，请重试"}
-
     if errno != 0 and code != "SUCCESS":
         return {"success": False, "message": f"登录被拒绝: {result}"}
 
@@ -239,8 +279,23 @@ def _do_sign(qr_url: str, username: str, password: str) -> dict:
     resp_text = sign_resp.text
     logger.info("签到响应 [%d]: %s", sign_resp.status_code, resp_text[:200])
 
+    payload_message = ""
+    try:
+        sign_payload = sign_resp.json()
+        payload_message = _extract_message_from_payload(sign_payload)
+    except ValueError:
+        sign_payload = None
+
     if "操作成功" in resp_text or '"200"' in resp_text:
         return {"success": True, "message": "签到成功"}
+
+    if _contains_expired_hint(payload_message) or _contains_expired_hint(resp_text):
+        if payload_message:
+            return {"success": False, "message": f"二维码已过期: {payload_message}"}
+        return {"success": False, "message": "二维码已过期"}
+
+    if payload_message:
+        return {"success": False, "message": f"签到未成功: {payload_message}"}
 
     return {"success": False, "message": f"签到未成功: {resp_text[:200]}"}
 

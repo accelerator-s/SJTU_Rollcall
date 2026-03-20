@@ -70,6 +70,7 @@ const App = {
             <div class="az-card__body">
               <div class="scanner-wrapper">
                 <div id="qr-reader"></div>
+                <img class="scanner-frozen-frame" v-if="frozenFrame" :src="frozenFrame" alt="frozen-frame" />
                 <div class="scanner-overlay" v-if="scanning && !processing">
                   <div class="scanner-overlay__corner scanner-overlay__corner--tl"></div>
                   <div class="scanner-overlay__corner scanner-overlay__corner--tr"></div>
@@ -79,7 +80,7 @@ const App = {
                 </div>
                 <div class="scanner-processing" v-if="processing">
                   <div class="scanner-processing__spinner"></div>
-                  <div class="scanner-processing__text">正在签到...</div>
+                  <div class="scanner-processing__text">识别中...</div>
                 </div>
               </div>
               <div class="scanner-controls">
@@ -143,6 +144,7 @@ const App = {
     const scanning = ref(false);
     const processing = ref(false);
     const history = ref([]);
+    const frozenFrame = ref('');
 
     let scanner = null;
     let historyIdCounter = 0;
@@ -175,6 +177,10 @@ const App = {
 
     // 二维码扫描成功回调
     const onScanSuccess = async (decodedText) => {
+      if (processing.value) {
+        return;
+      }
+
       // 防抖：同一 URL 5 秒内不重复处理
       const now = Date.now();
       if (decodedText === lastScannedUrl && now - lastScannedTime < 5000) {
@@ -188,7 +194,9 @@ const App = {
         return;
       }
 
+      captureFrozenFrame();
       processing.value = true;
+      await stopScanner();
 
       try {
         const result = await api.sign(decodedText);
@@ -204,6 +212,29 @@ const App = {
         addHistory(false, msg, decodedText);
       } finally {
         processing.value = false;
+      }
+    };
+
+    const captureFrozenFrame = () => {
+      try {
+        const reader = document.getElementById('qr-reader');
+        const video = reader?.querySelector('video');
+        if (!video || !video.videoWidth || !video.videoHeight) {
+          return;
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          return;
+        }
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        frozenFrame.value = canvas.toDataURL('image/jpeg', 0.9);
+      } catch {
+        frozenFrame.value = '';
       }
     };
 
@@ -235,6 +266,7 @@ const App = {
 
     const startScanner = async () => {
       await nextTick();
+      frozenFrame.value = '';
 
       if (!scanner) {
         scanner = new Html5Qrcode('qr-reader');
@@ -330,6 +362,7 @@ const App = {
       jaccount,
       scanning,
       processing,
+      frozenFrame,
       history,
       toggleScanner,
       clearHistory,
